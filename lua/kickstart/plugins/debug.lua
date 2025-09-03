@@ -94,9 +94,38 @@ return {
       -- online, please don't ask me how to install them :)
       ensure_installed = {
         -- Update this to ensure that you have the debuggers for the langs you want
+        'codelldb',
         'delve',
       },
     }
+    local function get_python_executable()
+      -- Check if venv-selector has an active venv
+      local venv_path = vim.fn.getenv 'VIRTUAL_ENV' or vim.fn.getenv 'CONDA_PREFIX'
+      if venv_path and vim.fn.executable(venv_path .. '/bin/python') == 1 then
+        return venv_path .. '/bin/python'
+      end
+
+      -- Check if 'uv' has detected an active venv (common for `uv shell`)
+      -- This is more implicit and relies on environment variables or current directory structure
+      if vim.fn.executable 'uv' == 1 then
+        -- Try to find a .venv or similar uv-managed environment in current or parent dirs
+        local current_dir = vim.fn.getcwd()
+        local path_sep = package.config:sub(1, 1) -- Get system path separator
+        local parts = vim.split(current_dir, path_sep)
+        for i = #parts, 1, -1 do
+          local check_path = table.concat(vim.list_slice(parts, 1, i), path_sep) .. path_sep .. '.venv'
+          if vim.fn.isdirectory(check_path) == 1 then
+            local uv_venv_python = check_path .. '/bin/python' -- Standard uv venv layout
+            if vim.fn.executable(uv_venv_python) == 1 then
+              return uv_venv_python
+            end
+          end
+        end
+      end
+
+      -- Fallback to system Python if no venv detected
+      return 'python' -- Rely on PATH
+    end
 
     -- Dap UI setup
     -- For more information, see |:help nvim-dap-ui|
@@ -135,6 +164,58 @@ return {
     dap.listeners.after.event_initialized['dapui_config'] = dapui.open
     dap.listeners.before.event_terminated['dapui_config'] = dapui.close
     dap.listeners.before.event_exited['dapui_config'] = dapui.close
+    -- cpp lldb dap
+    dap.adapters.codelldb = {
+      type = 'server',
+      port = '${port}',
+      executable = {
+        command = vim.fn.stdpath 'data' .. '/mason/packages/codelldb/codelldb',
+        args = { '--port', '${port}' },
+      },
+    }
+    -- debugpy adapter configuration
+    dap.adapters.python = {
+      type = 'executable',
+      -- This path is where Mason installs debugpy. Verify this.
+      command = vim.fn.stdpath 'data' .. '/mason/bin/debugpy',
+      args = { '-m', 'debugpy.adapter' },
+    }
+
+    -- Python DAP configurations (equivalent to launch.json)
+    dap.configurations.python = {
+      {
+        type = 'python',
+        request = 'launch',
+        name = 'Launch file',
+        -- Use the dynamically determined python executable
+        python = get_python_executable(),
+        program = '${file}', -- Debug the current file
+        cwd = '${workspaceFolder}',
+        console = 'integratedTerminal', -- Or 'externalTerminal' for a new window
+        stopOnEntry = true,
+      },
+      {
+        type = 'python',
+        request = 'launch',
+        name = 'Launch module',
+        python = get_python_executable(),
+        module = function()
+          return vim.fn.input('Module name: ', '', 'file')
+        end,
+        cwd = '${workspaceFolder}',
+        console = 'integratedTerminal',
+        stopOnEntry = true,
+      },
+      {
+        type = 'python',
+        request = 'attach',
+        name = 'Attach to process',
+        python = get_python_executable(),
+        host = '127.0.0.1',
+        port = 5678, -- Default debugpy port
+        cwd = '${workspaceFolder}',
+      },
+    }
 
     -- Install golang specific config
     require('dap-go').setup {
